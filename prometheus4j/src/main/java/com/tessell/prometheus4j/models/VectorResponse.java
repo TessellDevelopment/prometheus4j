@@ -9,7 +9,7 @@ public class VectorResponse {
 
     public static class VectorResult {
         private Map<String, String> metric;
-        private List<Float> value;
+        private List<Double> value;
 
         public Map<String, String> getMetric() {
             return metric;
@@ -19,11 +19,11 @@ public class VectorResponse {
             this.metric = metric;
         }
 
-        public List<Float> getValue() {
+        public List<Double> getValue() {
             return value;
         }
 
-        public void setValue(List<Float> value) {
+        public void setValue(List<Double> value) {
             this.value = value;
         }
 

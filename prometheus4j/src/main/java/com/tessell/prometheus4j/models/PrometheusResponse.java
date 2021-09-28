@@ -18,8 +18,8 @@ public class PrometheusResponse {
 
     class ResultItem {
         Map<String, String> metric;
-        List<Float> value;
-        List<List<Float>> values;
+        List<Double> value;
+        List<List<Double>> values;
 
         @Override
         public String toString() {

@@ -30,7 +30,7 @@ public class MatrixResponse {
 
     public static class MatrixResult {
         Map<String, String> metric;
-        List<List<Float>> values;
+        List<List<Double>> values;
 
         public Map<String, String> getMetric() {
             return metric;
@@ -40,11 +40,11 @@ public class MatrixResponse {
             this.metric = metric;
         }
 
-        public List<List<Float>> getValues() {
+        public List<List<Double>> getValues() {
             return values;
         }
 
-        public void setValues(List<List<Float>> values) {
+        public void setValues(List<List<Double>> values) {
             this.values = values;
         }
 
