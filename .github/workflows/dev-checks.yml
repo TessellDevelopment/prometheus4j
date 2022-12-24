@@ -136,13 +136,4 @@ jobs:
           echo "mail_subject=***${{ job.status }}*** || ${{ github.workflow }}  ||  ${{ github.repository }} " >> $GITHUB_OUTPUT
           echo "mail_body=${{ env.BODY }}" >> $GITHUB_OUTPUT
         
-  send-mail:
-    uses: ./.github/workflows/email_dc.yaml
-    needs: dev-checks
-    with:
-      subject: ${{ needs.dev-checks.outputs.mail_subject_output }}
-      body: ${{ needs.dev-checks.outputs.mail_body_output }} 
-      to: ${{ needs.dev-checks.outputs.mail_id_output }}
-    secrets: inherit
-    if: ${{ failure() && contains(github.event.pull_request.head.ref, 'double_commit') }}
-        
+
