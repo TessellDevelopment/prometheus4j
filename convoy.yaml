@@ -1,0 +1,14 @@
+language: java
+appGroup: tessell
+version: 1.0.3
+generates:
+  artifacts:
+    - name: prometheus4j
+      excludeFromReleaseManifest: true
+      buildFunction: gradlew
+      extension: jar
+ci:
+  bestPractices:
+    jiraValidation: 
+      jiraIdSource: BRANCH_NAME_PREFIX
+      matchingRule: ALL
