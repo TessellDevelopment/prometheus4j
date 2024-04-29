@@ -41,7 +41,7 @@ jobs:
         uses: actions/github-script@v6.3.3
         id: create_tag
         with:
-          github-token: ${{ secrets.CIPIPELINE_NEXUS_PASSWORD  }}
+          github-token: ${{ secrets.CIPIPELINE_GITHUB_TOKEN  }}
           script: |
             const fs = require('fs');
             const yaml = require('js-yaml');
@@ -169,7 +169,7 @@ jobs:
             else
               validate_label=true
               if [[ "${{ github.event.pull_request.base.ref }}" == "main" ]]; then
-                TOKEN=$(echo -n '${{secrets.CIPIPELINE_NEXUS_USERNAME}}:${{secrets.CIPIPELINE_NEXUS_PASSWORD}}' | base64 -w 0)
+                TOKEN=$(echo -n '${{secrets.CIPIPELINE_GITHUB_USER}}:${{secrets.CIPIPELINE_GITHUB_TOKEN}}' | base64 -w 0)
                 APP_GROUP=$(yq '.appGroup // "tessell"' convoy.yaml)
                 URL="http://api.convoy.tessell.cloud/devops/applications/app-groups/$APP_GROUP/latest-main-release-label"
                 RESPONSE=$(curl -f --location "$URL" --header "Authorization: Basic $TOKEN")

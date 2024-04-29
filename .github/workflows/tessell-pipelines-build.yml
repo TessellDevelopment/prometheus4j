@@ -47,10 +47,10 @@ jobs:
         if: ${{ !startsWith(env.SOURCE_BRANCH,'rel-') && env.SOURCE_BRANCH != 'main' }}
         run: |
           ./gradlew build --console plain \
-            -Pnexus_push_username="${{ secrets.CIPIPELINE_NEXUS_USERNAME }}" \
-            -Pnexus_push_password="${{ secrets.CIPIPELINE_NEXUS_PASSWORD }}" \
-            -Pnexus_username="${{ secrets.CIPIPELINE_NEXUS_USERNAME }}" \
-            -Pnexus_password="${{ secrets.CIPIPELINE_NEXUS_PASSWORD }}"
+            -Pnexus_push_username="${{ secrets.CIPIPELINE_GITHUB_USER }}" \
+            -Pnexus_push_password="${{ secrets.CIPIPELINE_GITHUB_TOKEN }}" \
+            -Pnexus_username="${{ secrets.CIPIPELINE_GITHUB_USER }}" \
+            -Pnexus_password="${{ secrets.CIPIPELINE_GITHUB_TOKEN }}"
         shell: bash
 
       - name: Build and Push with Gradle
@@ -58,10 +58,10 @@ jobs:
         run: |
           VERSION=$(yq '.version' convoy.yaml)
           ./gradlew publish --console plain  \
-            -Pnexus_push_username="${{ secrets.CIPIPELINE_NEXUS_USERNAME }}" \
-            -Pnexus_push_password="${{ secrets.CIPIPELINE_NEXUS_PASSWORD }}" \
-            -Pnexus_username="${{ secrets.CIPIPELINE_NEXUS_USERNAME }}" \
-            -Pnexus_password="${{ secrets.CIPIPELINE_NEXUS_PASSWORD }}" \
+            -Pnexus_push_username="${{ secrets.CIPIPELINE_GITHUB_USER }}" \
+            -Pnexus_push_password="${{ secrets.CIPIPELINE_GITHUB_TOKEN }}" \
+            -Pnexus_username="${{ secrets.CIPIPELINE_GITHUB_USER }}" \
+            -Pnexus_password="${{ secrets.CIPIPELINE_GITHUB_TOKEN }}" \
             -Pnexus_push_repo_m2="${{ env.NEXUS_PUSH_REPOS_M2 }}" \
             -Pnexus_pull_repo_m2="${{ env.NEXUS_PULL_REPOS_M2 }}" \
             -Pversion=$VERSION
@@ -97,7 +97,7 @@ jobs:
 
       - uses: technote-space/workflow-conclusion-action@v3
         with:
-          GITHUB_TOKEN: ${{ secrets.CIPIPELINE_NEXUS_PASSWORD }}
+          GITHUB_TOKEN: ${{ secrets.CIPIPELINE_GITHUB_TOKEN }}
 
       - name: POST API to Convoy
         if: ${{ startsWith(env.SOURCE_BRANCH,'rel-') || env.SOURCE_BRANCH == 'main' }}
@@ -106,8 +106,8 @@ jobs:
           COMMIT_HASH: "${{github.sha}}"
           REPO: "${{github.repository}}"
           BASE_BRANCH: "${{github.event.pull_request.base.ref}}"
-          GITHUB_TOKEN: ${{ secrets.CIPIPELINE_NEXUS_PASSWORD }}
-          USER: ${{secrets.CIPIPELINE_NEXUS_USERNAME}}
+          GITHUB_TOKEN: ${{ secrets.CIPIPELINE_GITHUB_TOKEN }}
+          USER: ${{secrets.CIPIPELINE_GITHUB_USER}}
           STATUS: "${{env.WORKFLOW_CONCLUSION}}"
           SOURCE_BRANCH: "${{env.SOURCE_BRANCH}}"
         run: |
