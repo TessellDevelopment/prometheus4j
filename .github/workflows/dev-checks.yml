@@ -1,4 +1,4 @@
-# This is a basic workflow to help you get started with Actions
+---
 name: Best Practices Check
 
 # Controls when the workflow will run
@@ -6,21 +6,30 @@ on:
   pull_request:
     branches:
       - 'main'
-      - 'rel-**'
-      - 'TS-*'
+      - 'rel-*'
+      - 'TS-*' 
+      - 'SRE-*'
+      - 'TDEVOPS-*'
+      - 'revert-*'
 
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
-# A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
-  # This workflow contains a single job called "build"
   dev-checks:
-    # The type of runner that the job will run on
     runs-on: ubuntu-latest
-
-    # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
+      - name: Dump GitHub context
+        env:
+          GITHUB_CONTEXT: ${{ toJson(github) }}
+        run: |
+          echo "$GITHUB_CONTEXT"
+
+      - uses: actions/checkout@v3
+        with:
+          token: ${{ secrets.CIPIPELINE_GITHUB_TOKEN  }}
+          fetch-depth: 0
+
       - name: Get branch name (merge)
         if: github.event_name != 'pull_request'
         shell: bash
@@ -31,12 +40,191 @@ jobs:
         if: github.event_name == 'pull_request'
         shell: bash
         run: |
-          echo "SOURCE_BRANCH=$(echo ${GITHUB_HEAD_REF} | tr / -)" >> $GITHUB_ENV
+          echo "SOURCE_BRANCH=$(echo ${{ github.event.pull_request.head.ref }} | tr / -)" >> $GITHUB_ENV
           echo "TARGET_BRANCH=$(echo ${GITHUB_BASE_REF} | tr / -)" >> $GITHUB_ENV
-        
-      # Check if branch name is according to the guidelines
-      - name: Check branch name
-        if: ${{ !startsWith(env.SOURCE_BRANCH,'TS-') }}
+          echo "GITHUB_TOKEN=${{ secrets.CIPIPELINE_GITHUB_TOKEN  }}" >> $GITHUB_ENV
+      
+      - name: Check Format
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
-          echo "::debug::Branch name must start with 'TS-' ${{ env.SOURCE_BRANCH }}"
-          exit 1
+          if echo "${{ env.SOURCE_BRANCH }}" | grep -Eq '^revert-'; then
+              echo "Revert branch, skipping Format check"
+              exit 0
+          fi
+          if echo "${{ env.SOURCE_BRANCH }}" | grep -Eq '^(TS-|SRE-|TDEVOPS-|TOPS-)'; then
+            echo "Branch name starts with 'TS-' or 'SRE-' or 'TDEVOPS-' or 'TOPS-'"
+          else
+            echo "Branch name does not start with 'TS-' or 'SRE-' or 'TDEVOPS-' or 'TOPS-'. Checking PR title format."
+            PULL_REQUEST_TITLE="$PR_TITLE"
+            PATTERN="(TS|TDEVOPS|TOPS|SRE)-[0-9]+\s\|\s"
+            if [[ ! $PULL_REQUEST_TITLE =~ $PATTERN ]]; then
+              echo "Error: Pull request title is not in the required format. Please use 'TS-XXXX | --' or 'TDEVOPS-XXXX | --' or 'TOPS-XXXX | --' or 'SRE-XXXX | --' format."
+              exit 1
+            else 
+              echo "PR Title is in the valid format."
+            fi  
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v2
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install shyaml
+
+      - name: Check double commit
+        env: 
+          PR_TITLE: ${{github.event.pull_request.title}}
+          BRANCH: ${{ github.event.pull_request.head.ref}}
+        run: |
+          if ([[ '${{ github.event.pull_request.user.login }}' != 'cipipelinetessell' ]]) && ([[ "$BRANCH" == *"double_commit"* ]] || [[ "$PR_TITLE" == *"Double Commit"* ]]); then
+            if ([[ "$BRANCH" == *"revert"* ]] && [[ "$PR_TITLE" == *"Revert"* ]]); then
+              echo "Revert Double commit Branch. Allowed"
+            else   
+              echo "Exclude Double commit naming in Branch, PR title and try again."
+              exit 1
+            fi
+          else
+            echo "No double commit conflicts found in Branch or PR title."
+          fi
+
+      - name: import packages for json lint
+        run: |
+          sudo sudo npm install jsonlint -g
+          
+      - name: Check for Jsonlint
+        run: |
+          set -e
+          git diff --name-only --diff-filter=AM ${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }} | grep '\.json$' | xargs -I{} sh -c 'jsonlint -q "{}" || { echo "::error::Invalid JSON file: {}"; exit 1; }'
+
+      - name: Install dependencies
+        run: npm install node-fetch js-yaml @octokit/rest --legacy-peer-deps
+
+      - name: Check for merge conflicts
+        uses: actions/github-script@v6.4.1
+        with:
+          github-token: ${{ secrets.CIPIPELINE_GITHUB_TOKEN  }}
+          script: |
+            head_commit = "${{ github.sha }}"
+            base_commit = "${{ github.sha }}"
+            if ( "${{ github.event.before }}" != '0000000000000000000000000000000000000000') { 
+              base_commit = "${{ github.event.before }}"
+            }
+            if ( "${{ github.event_name }}" == 'pull_request') {
+              console.log("Using the base branch's commit for comparing.")
+              base_commit = "${{ github.event.pull_request.base.sha  }}"
+            }
+            response = await github.rest.repos.compareCommits({
+                owner: "${{ github.repository_owner }}",
+                repo: "${{  github.repository }}".split('/')[1],
+                head: head_commit,
+                base: base_commit
+            });
+            response.data.files.forEach(function(file_entry) {
+              console.log(file_entry.filename);
+              dir_name = file_entry.filename.split("/")[0];
+              console.log(file_entry.patch);
+              if(typeof file_entry.patch !== 'undefined'){
+                if ( file_entry.patch.includes("+<<<<<<<") || file_entry.patch.includes("+=======") || file_entry.patch.includes("+>>>>>>>")) {
+                  core.setFailed("Please resolve Merge Conflict in: " + dir_name );  
+                }
+              }
+              else{
+                console.log("Skipping:" + file_entry.filename);
+              }
+            });
+            console.log("No merge conflicts found"); 
+
+      - name: check for version in nexus 
+        uses: actions/github-script@v7.0.1
+        env:
+          NEXUS_URL: ${{vars.NEXUS_PROTOCOL_PUBLIC}}://${{vars.NEXUS_SERVER_ENDPOINT_PUBLIC}}/service/rest/v1/search?repository
+          NEXUS_USERNAME: ${{secrets.CIPIPELINE_GITHUB_USER}}
+          NEXUS_PASSWORD: ${{ secrets.CIPIPELINE_GITHUB_TOKEN}}
+        with:
+          script: |
+            const exp = require('constants');
+            const fs = require('fs');
+            const yaml = require('js-yaml');
+            var nexusRepo;
+            var version;
+            var exporter;
+            
+            function checkVersion(nexusRepo, exporter, version){
+              console.log(nexusRepo);
+              console.log(exporter);
+              console.log(version);
+              execSync = require('child_process').execSync;
+              const output=execSync(`
+                  file="${exporter}-${version}"
+                  API_URL="$NEXUS_URL=${nexusRepo}&version=${version}"
+                  echo $API_URL
+                  echo $file
+                  response=$(curl -u "$NEXUS_USERNAME:$NEXUS_PASSWORD" -X GET "$API_URL")
+                  check="$(echo $response | grep $file)"
+                  if [ ! -z "$check" ]
+                      then
+                          echo "Fail"
+                          exit 
+                      fi
+                  
+                  while [ "$(echo $response | jq -r '.continuationToken')" != "null" ]; do
+                      continuationToken=$(echo $response | jq -r '.continuationToken')
+                      response=$(curl -u "$NEXUS_USERNAME:$NEXUS_PASSWORD" -X GET "$API_URL&continuationToken=$continuationToken")
+                      check="$(echo $response | grep $file)"
+                      if [ ! -z "$check" ]
+                      then
+                          echo "Fail"
+                          exit 
+                      fi
+                  done
+                  if [ -z "$check" ]
+                      then
+                          echo "Pass"
+                          exit 
+                      fi
+              `, { encoding: 'utf-8' }); 
+              console.log(output);
+              if(output.includes("Fail")){
+                throw new Error("Error: Update version, matching version file already present in Nexus")
+              }
+              else
+                console.log("Passed: No matching version present in Nexus")
+            }
+            
+            try{
+              const content = fs.readFileSync('./convoy.yaml', 'utf8');
+              const data = yaml.load(content);
+              var language = data.language
+              version = data.version;
+              exporter = data.generates.artifacts[0].name
+              nexusRepo = '${{vars.NEXUS_PUSH_REPOS_M2}}'
+              if(version === undefined || exporter === undefined ){
+                console.log("Required parameters not present in convoy.yaml, skipping check nexus version")
+                process.exit(0);
+              }
+            } catch(error){
+              console.log("convoy.yaml not present in repository or missing key. skipping check nexus version.")
+              console.error('Error:', error.message)
+              process.exit(0);
+            }
+            try{
+              checkVersion(nexusRepo,exporter,version)
+            } catch (e) {
+              console.error(e);
+              process.exit(1);
+            }
+      
+      - name: check to verify same branch is exist
+        if: ${{ startsWith(env.TARGET_BRANCH,'rel-') && !contains(env.SOURCE_BRANCH,'double_commit') }}
+        run: |
+          branch_to_check=${{ env.SOURCE_BRANCH }}-main-double_commit
+          list_of_branches=($(git branch -r | awk -F '/' '{print $2}'))
+          for branch in "${list_of_branches[@]}";do
+          if [[ "$branch" == "$branch_to_check" ]];then
+            echo "Double commit branch with name $branch is alredy exist , please merge and/or delete  the branch ";exit 1;
+          fi
+          done
+             

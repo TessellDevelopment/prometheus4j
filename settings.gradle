@@ -1,1 +1,17 @@
+pluginManagement {
+  repositories {
+      mavenLocal()
+        maven {
+          url = "${nexus_repo_base}/${nexus_pull_repo_m2}"
+          credentials {
+            username = nexus_username
+            password = nexus_password
+          }
+        }
+      gradlePluginPortal()
+    }
+  plugins {
+    id 'tessell-devops' version "${devopsPluginVersion}"
+  }
+}
 include ':prometheus4j'

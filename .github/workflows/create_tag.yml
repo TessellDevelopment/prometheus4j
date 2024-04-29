@@ -14,91 +14,366 @@ on:
     types: [closed]
     branches:
       - 'rel-*'
+      - 'main'
 
 jobs:
   create-tag-on-merge:
-    runs-on: self-hosted
-    if: "contains(github.base_ref, 'rel-') && github.event.pull_request.merged"
+    runs-on: ubuntu-latest
+    outputs:
+      tag_ref_output: ${{ steps.tag_output.outputs.tag_ref }}
+      uses_custom_version_output: ${{ steps.tag_output.outputs.uses_custom_version }}
+    env:
+       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL  }}
+    if: github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged == true
     steps:
-      - name: Find commit to tag
-        id: commit
-        uses: actions/github-script@v4
+      - uses: actions/checkout@v3
         with:
-          github-token: ${{ secrets.PIPELINES_REPO_TOKEN  }}
-          script: |
-            console.log("${{ github.event.pull_request.merge_commit_sha }}")
-            core.setOutput("commit_to_tag", "${{ github.event.pull_request.merge_commit_sha }}")
+          fetch-depth: 0
 
       - name: Find latest tag
+        run: |
+          latest_tags+=("$(git tag --contains '${{ github.event.pull_request.base.sha }}')")
+          for tag in $latest_tags; do tag_arr+=($tag); done
+          echo "TAGS=${tag_arr[@]}" >> $GITHUB_ENV
         id: latest_tag
-        uses: actions/github-script@v4
+
+      - name: Create tag and update ref
+        uses: actions/github-script@v6.3.3
+        id: create_tag
         with:
-          github-token: ${{ secrets.PIPELINES_REPO_TOKEN  }}
+          github-token: ${{ secrets.CIPIPELINE_GITHUB_TOKEN  }}
           script: |
-            console.log("${{ github.ref }}")
-            parts = "${{ github.ref }}".split('/')
-            branch_name = parts[parts.length - 1]
-            if (branch_name.startsWith('rel-') == false) {
-              console.log("Not matching.")
-            }
-            parts = branch_name.split('.')
-            branch_part = parts.slice(0, parts.length - 1).join('.')
-            per_page = 50
-            page = 1
-            all_tags = []
-            max_patch_no = 1
-            while (true) {
-              result = await github.repos.listTags({
-                owner: "${{ github.repository_owner }}",
-                repo: "${{  github.repository }}".split('/')[1],
-                per_page: per_page,
-                page: page
-              })
-              for (entry in result.data) {
-                tag_name = result.data[entry].name
-                if (tag_name.startsWith(branch_part)) {
-                  patch_no = parseInt(tag_name.substring(branch_part.length + 1))
-                  if (max_patch_no <= patch_no) {
-                    max_patch_no = patch_no + 1
+            const fs = require('fs');
+            const yaml = require('js-yaml');
+            const content = fs.readFileSync('./convoy.yaml', 'utf8');
+            const data = yaml.load(content);
+            var language = data.language
+            var version = data.version
+            var uses_custom_version = "false"
+            if (language === 'helm'){
+              const path = data.generates.helmCharts[0].chartPath
+              const contentHelm = fs.readFileSync(path, 'utf8');
+              const dataHelm = yaml.load(contentHelm);
+              new_tag = dataHelm.version
+              uses_custom_version = "true"
+            } else{
+              if (version !== undefined ){
+                uses_custom_version = "true"
+              }
+              latest_tag = '0.0.0'
+              // process multiple tags if any
+              tags = "${{ env.TAGS }}".split(' ')
+              if (tags.length == 1) {
+                latest_tag = tags[0]
+              } else {
+                if ("${{ github.event.pull_request.base.ref }}" == "main") {
+                  for (i in tags) {
+                    tag = tags[i]
+                    console.log("Checking tag " + tag)
+                    if (latest_tag == null) {
+                      latest_tag = tag
+                      continue
+                    }
+                    latest_parts = latest_tag.split(".")
+                    tag_parts = tag.split(".")
+                    for (i = 0; i < tag_parts.length; i++) {
+                      if (parseInt(tag_parts[i]) < parseInt(latest_parts[i])) {
+                        console.log("Skipping " + tag)
+                        break
+                      }
+                      if (parseInt(tag_parts[i]) > parseInt(latest_parts[i])) {
+                        latest_tag = tag
+                        console.log("Setting " + latest_tag)
+                        break
+                      }
+                    }
+                  }
+                } else {
+                  tag_base = "${{ github.event.pull_request.base.ref }}".substring(4).split(".").slice(0,2)
+                  latest_tag = tag_base.join(".") + ".0"
+                  for (i in tags) {
+                    tag = tags[i]
+                    console.log("branch - Checking tag " + tag)
+                    tag_parts = tag.split(".")
+                    if (tag_base[0] == tag_parts[0] && tag_base[1] == tag_parts[1]) {
+                      latest_parts = latest_tag.split(".")
+                      if (parseInt(latest_parts[2]) < parseInt(tag_parts[2])) {
+                        latest_tag = tag
+                      }
+                    }
                   }
                 }
               }
-              if (result.data.length == per_page) {
-                page = page + 1
-              } else {
-                break;
+              console.log("Latest tag: " + latest_tag)
+
+              // check if we have
+              if ( latest_tag == '' || latest_tag === undefined) {
+                console.log("Couldn't determine the latest tag, exiting. Retry manually..")
+                process.exit(1);
               }
+
+              // increase the minor version lineraly to get the new tag
+              tag_parts = latest_tag.split('.')
+              new_tag = [tag_parts[0], tag_parts[1], parseInt(tag_parts[2]) + 1].join('.')
+              
             }
-            tag = branch_part + '.' + max_patch_no
-            core.setOutput('tag_name', tag)
 
-      - name: Create tag
-        uses: actions/github-script@v4
-        with:
-          github-token: ${{ secrets.PIPELINES_REPO_TOKEN  }}
-          script: |
-            tag = "${{ steps.latest_tag.outputs.tag_name }}"
-            sha_to_tag = "${{ steps.commit.outputs.commit_to_tag }}"
-            repo_name = "${{  github.repository }}".split('/')[1]
-            console.log("Creating tag," + tag + " against commit " + sha_to_tag)
+            // head of the branch needs to be tagged
+            sha_to_tag = "${{ github.event.pull_request.merge_commit_sha }}"
 
-            result = await github.git.createTag({
+            console.log("Creating tag: " + new_tag + " against commit " + sha_to_tag)
+
+            result = await github.rest.git.createTag({
                 owner: "${{ github.repository_owner }}",
-                repo: repo_name,
-                tag: tag,
+                repo: "${{  github.repository }}".split('/')[1],
+                tag: new_tag,
                 message: 'Tag created by CI pipeline',
                 type: 'commit',
                 object: sha_to_tag
-            })
+            });
+
             console.log(result)
-            fullTagName = "refs/tags/" + tag
-            console.log("Creating tag..." + tag)
-            console.log("Updating tag..." + fullTagName)
-            newRef = await github.git.createRef({
+
+            fullTagName = "refs/tags/" + new_tag
+
+            console.log("Updating tag with REF: " + fullTagName)
+
+            newRef = await github.rest.git.createRef({
                 owner: "${{ github.repository_owner }}",
-                repo: repo_name,
+                repo: "${{  github.repository }}".split('/')[1],
                 ref: fullTagName,
                 sha: sha_to_tag
-            })
+            });
             console.log('Ref updated.');
-            core.setOutput('tag_ref', fullTagName)
+            core.setOutput('tag_ref', new_tag) 
+            core.setOutput('uses_custom_version', uses_custom_version)  
+
+      - name: Tag Output
+        id: tag_output
+        run: |
+          echo "tag_ref=${{steps.create_tag.outputs.tag_ref}}" >> $GITHUB_OUTPUT
+          echo "uses_custom_version=${{steps.create_tag.outputs.uses_custom_version}}" >> $GITHUB_OUTPUT
+
+      - name: Set Label
+        id: set_label
+        shell: bash
+        run: |
+          validate_label=false
+          if [ -f convoy.yaml ]; then
+            language=$(yq '.language' convoy.yaml)
+            version=$(yq '.version' convoy.yaml)
+            if [[ "$language" == "helm" ]]; then
+              echo "Helm repo, No validation needed using version as tag."
+            elif [[ "$version" != "null" ]]; then
+              echo "Version present in convoy.yaml, No validation needed using version as tag."
+            else
+              validate_label=true
+              if [[ "${{ github.event.pull_request.base.ref }}" == "main" ]]; then
+                TOKEN=$(echo -n '${{secrets.CIPIPELINE_GITHUB_USER}}:${{secrets.CIPIPELINE_GITHUB_TOKEN}}' | base64 -w 0)
+                APP_GROUP=$(yq '.appGroup // "tessell"' convoy.yaml)
+                URL="http://api.convoy.tessell.cloud/devops/applications/app-groups/$APP_GROUP/latest-main-release-label"
+                RESPONSE=$(curl -f --location "$URL" --header "Authorization: Basic $TOKEN")
+                echo "$RESPONSE"
+                LABEL=$(echo "$RESPONSE" | jq -r '.["latest-main-release-label"]')
+                echo "$LABEL"
+                if [[ $LABEL == rel-* ]]; then
+                    echo "LABEL=$LABEL" >> $GITHUB_ENV
+                else
+                    echo "Response: $LABEL"
+                    echo "Label does not start with 'rel'. Check response."
+                    exit 1 
+                fi
+              
+              else
+                echo "LABEL=${{ github.event.pull_request.base.ref }}" >> $GITHUB_ENV
+              fi
+            fi  
+            else
+            echo "convoy.yaml not found"
+            fi 
+            echo "validate_label=$validate_label" >> $GITHUB_OUTPUT
+
+      - name: Validate Label
+        if: ${{ steps.set_label.outputs.validate_label == 'true' }}
+        run: |
+          tag=$(echo ${{steps.create_tag.outputs.tag_ref}} | cut -d '.' -f 2)
+          label=$(echo ${{env.LABEL}} | cut -d '.' -f 2)
+          if [ "$tag" == "$label" ]; then
+              echo "TAG and LABEL are on same release label: rel-$TAG"
+          else
+              echo "TAG and LABEL are on different release label. Please check git tag and API response."
+              exit 1
+          fi   
+  
+      - name: Slack Notification
+        uses: act10ns/slack@v1.5.0
+        with:
+           status: ${{ job.status }}
+           steps: ${{ toJson(steps) }}
+           channel: ${{ secrets.SLACK_DEVOPS_CHANNEL  }}
+        if: failure()
+
+  push-commit-details-to-convoy: 
+    runs-on: ubuntu-latest
+    needs: create-tag-on-merge
+    env:
+      SLACK_WEBHOOK_URL: ${{ secrets.CONVOY_ALERTS_SLACK_URL }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+        with:
+          ref: ${{github.event.pull_request.base.ref}}
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v2
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests pyyaml pybase64
+
+      - name: POST API to Convoy
+        env:
+          API_URL: http://api.convoy.tessell.cloud/devops/git-metadata/commits
+          COMMIT_HASH: "${{github.sha}}"
+          COMMITTED_AT: "${{github.event.pull_request.merged_at}}"
+          USES_CUSTOM_VERSION: "${{needs.create-tag-on-merge.outputs.uses_custom_version_output}}"
+          REPO: "${{github.event.pull_request.base.repo.name}}"
+          TAG: "${{needs.create-tag-on-merge.outputs.tag_ref_output}}"
+          BASE_BRANCH: "${{github.event.pull_request.base.ref}}"
+          PR_ID: "${{github.event.number}}"
+          GITHUB_TOKEN: ${{ secrets.CIPIPELINE_GITHUB_TOKEN }}
+          OWNER: ${{github.repository_owner}}
+          USER: ${{secrets.CIPIPELINE_GITHUB_USER}}
+        run: |
+          python - <<EOF
+          
+          import yaml
+          import requests
+          import os
+          import time
+          import base64
+          import subprocess
+          from datetime import datetime
+
+          def delete_keys(data, keys_to_exclude):
+            for key in keys_to_exclude:
+                try:
+                    del data[key]
+                except:
+                    print(f'{key} not present in convoy.yaml')
+            return data
+          
+          def get_artifacts(generates, version):
+              artifacts=[]
+              for artifact_type, artifact in generates.items():
+                  for object in artifact:
+                    element={}
+                    element["type"] = artifact_type
+                    try:
+                      element["releaseManifestKey"] = object["releaseManifestKey"]
+                    except:
+                        print("Artifact excluded from Release Manifest")
+                        continue
+                    element["name"] = object["name"]
+                    element["version"] = version
+                    if artifact_type == 'helmCharts':
+                      chart_path = object["chartPath"]
+                      with open(chart_path, 'r') as chart_yaml_content:
+                        data = yaml.safe_load(chart_yaml_content)
+                      element["version"] = data.get('version')
+                    try:
+                      element["extension"] = object["extension"]
+                    except:
+                      print("Extension Details not present")
+                    artifacts.append(element)
+              if len(artifacts) == 0: 
+                return
+              return artifacts
+            
+          def post_request(payload):
+            API_URL = os.environ.get('API_URL')
+            CONVOY_AUTH_TOKEN = os.environ.get('USER')+':'+ os.environ.get('GITHUB_TOKEN')
+            CONVOY_AUTH_TOKEN = base64.b64encode(CONVOY_AUTH_TOKEN.encode('utf-8')).decode('utf-8')
+            headers = {
+              'Authorization': f'Bearer {CONVOY_AUTH_TOKEN}',
+              'Content-Type': 'application/json'
+            }
+            max_retries = 3
+            retry_delay = 5 
+
+            for _ in range(max_retries):
+                response = requests.post(API_URL, json=payload, headers=headers)
+                if response.status_code == 200 or response.status_code == 409:
+                    print(response.status_code)
+                    print(response.text)
+                    break
+                else:
+                    print(response.status_code)
+                    print(response.text)
+                    print(f"Retrying... ({max_retries - _} attempts left)")
+                    time.sleep(retry_delay)
+            else:
+                print("API request failed after retries.")
+                exit(1)
+            print("POST request Complete")
+            return
+            
+          REPO = os.environ.get('REPO')
+          OWNER = os.environ.get('OWNER')
+          GITHUB_TOKEN = os.environ.get('GITHUB_TOKEN')
+          COMMIT_HASH = os.environ.get('COMMIT_HASH')
+          USES_CUSTOM_VERSION = os.environ.get('USES_CUSTOM_VERSION')
+          BASE_BRANCH = os.environ.get('BASE_BRANCH')
+          PR_ID = os.environ.get('PR_ID')
+          TAG = os.environ.get('TAG')
+          COMMIT_MESSAGE = subprocess.check_output(['git','log','--pretty=format:%s','-n','1'])
+          COMMIT_MESSAGE = COMMIT_MESSAGE.decode('utf-8')
+          COMMITTED_AT = os.environ.get('COMMITTED_AT')
+          COMMITTED_AT = datetime.strptime(COMMITTED_AT, "%Y-%m-%dT%H:%M:%SZ").strftime("%Y-%m-%d %H:%M:%S")
+
+          try:
+            with open('convoy.yaml', 'r') as yaml_file:
+                yaml_data = yaml.safe_load(yaml_file)
+          except FileNotFoundError:
+              print(f"YAML file not found. Skipping this step.")
+              exit(0)
+          APP_GROUP = yaml_data.get('appGroup')
+          payload = { 
+            "repoName": REPO,
+            "appGroup": APP_GROUP,
+            "commitHash": COMMIT_HASH[:7],
+            "commitMessage": COMMIT_MESSAGE,
+            "committedAt": COMMITTED_AT,
+            "baseBranch": BASE_BRANCH,
+            "usesCustomVersion": USES_CUSTOM_VERSION == "true",
+            "tag": TAG,
+            "pullRequestId": PR_ID,
+          }
+          generates = yaml_data.get('generates')
+          type = yaml_data.get('artifactType') 
+          language = yaml_data.get('language')
+          if generates != None:
+              version = yaml_data.get('version')
+              if version == None:
+                version = TAG
+              payload["artifacts"] = get_artifacts(generates, version)
+              if payload["artifacts"] == None:
+                del payload["artifacts"]
+              print(payload)
+          elif type == None:
+              print(payload)
+          else: 
+              payload["artifactMetadata"] = get_artifact_metadata(yaml_data,type)
+              print(f"Payload: {payload}")
+          post_request(payload)
+          EOF
+
+      - name: Slack Notification
+        uses: act10ns/slack@v1.5.0
+        with:
+            status: ${{ job.status }}
+            steps: ${{ toJson(steps) }}
+            channel: ${{ secrets.CONVOY_ALERTS_SLACK_CHANNEL  }}
+        if: failure()

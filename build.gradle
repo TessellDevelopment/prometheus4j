@@ -1,11 +1,9 @@
 plugins {
   id 'java'
   id 'maven-publish'
-
+  id 'tessell-devops'
 }
 
-//System.setProperty('javax.net.ssl.trustStore', System.getenv('JAVA_CERTSTORE'))
-//systemProp.javax.net.ssl.trustStore=/usr/local/Cellar/openjdk/16.0.1/libexec/openjdk.jdk/Contents/Home/lib/security/cacerts
 allprojects {
   repositories {
     maven {
@@ -37,7 +35,6 @@ subprojects { subproject ->
       maven(MavenPublication) {
         groupId = project.group
         artifactId = project.name
-        version = project.version
         from components.java
       }
     }
