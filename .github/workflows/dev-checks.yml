@@ -8,6 +8,7 @@ on:
       - 'main'
       - 'rel-*'
       - 'TS-*' 
+      - 'SRE-*'
       - 'TDEVOPS-*'
       - 'revert-*'
 
@@ -65,15 +66,6 @@ jobs:
             fi  
           fi
 
-      - name: Check convoy.yaml
-        id: convoy_check
-        run: |
-          if [ -f "convoy.yaml" ]; then
-            echo "convoy_exists=true" >> $GITHUB_OUTPUT
-          else
-            echo "convoy_exists=false" >> $GITHUB_OUTPUT
-          fi
-
       - name: Set up Python
         uses: actions/setup-python@v2
 
@@ -81,7 +73,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install shyaml
-          echo ${{steps.convoy_check.outputs.convoy_exists}}
 
       - name: Check double commit
         env: 
@@ -145,113 +136,86 @@ jobs:
               }
             });
             console.log("No merge conflicts found"); 
-            
-      - name: Check version in convoy.yaml and gradle.properties
-        id: check_convoy
-        run: |
-            if [ -f convoy.yaml ]; then
-              if grep -q 'version:' convoy.yaml; then
-                echo "Version found in convoy.yaml"
-                
-                if [ -f gradle.properties ]; then
-                  if grep -q '^\s*version=' gradle.properties; then
-                    echo "Please remove version from gradle.properties"
-                    exit 1
-                  else
-                    echo "check_version_in_gradle=true" >> $GITHUB_OUTPUT
-                  fi
-                fi
-              else
-                echo "Version not found in convoy.yaml"
-                echo "check_version_in_gradle=false" >> $GITHUB_OUTPUT
-              fi
-            else
-              echo "convoy.yaml not found"
-              echo "check_version_in_gradle=false" >> $GITHUB_OUTPUT
-            fi
-            
-      - name: check for gradle properties version
-        uses: actions/github-script@v6.3.3
-        with:
-          github-token: ${{ secrets.CIPIPELINE_NEXUS_PASSWORD  }}
-          script: |
-            head_commit = "${{ github.sha }}"
-            base_commit = "${{ github.sha }}"
-            if ( "${{ github.event.before }}" != '0000000000000000000000000000000000000000') { 
-              base_commit = "${{ github.event.before }}"
-            }
-            if ( "${{ github.event_name }}" == 'pull_request') {
-              console.log("Using the base branch's commit for comparing.")
-              base_commit = "${{ github.event.pull_request.base.sha  }}"
-            }
-            console.log("base_commit " + base_commit);
-            console.log("head_commit " + head_commit); 
-            response = await github.rest.repos.compareCommits({
-                owner: "${{ github.repository_owner }}",
-                repo: "${{  github.repository }}".split('/')[1],
-                head: head_commit,
-                base: base_commit
-            });
-            version_updated = false
-             response.data.files.forEach(function(file_entry) {
-               if (file_entry.filename == 'convoy.yaml') {
-                   console.log(file_entry.patch)
-                   if (file_entry.patch.includes("-version:") && file_entry.patch.includes("+version:")) {
-                       version_updated = true
-                   }
-               }
-             });
-             if (version_updated == false) {
-                  core.setFailed("Tessell Libraries must update the version in gradle.properties file")
-             }
 
-      - name: check for terraform (code)
-        if : github.event_name == 'pull_request'
-        id: terraform_check
-        uses: actions/github-script@v6.3.3
+      - name: check for version in nexus 
+        uses: actions/github-script@v7.0.1
+        env:
+          NEXUS_URL: ${{vars.NEXUS_PROTOCOL_LOCAL}}://${{vars.NEXUS_SERVER_ENDPOINT_LOCAL}}/service/rest/v1/search?repository
+          NEXUS_USERNAME: ${{secrets.CIPIPELINE_NEXUS_USERNAME}}
+          NEXUS_PASSWORD: ${{ secrets.CIPIPELINE_NEXUS_PASSWORD}}
         with:
-          github-token: ${{ secrets.CIPIPELINE_NEXUS_PASSWORD  }}
           script: |
-            head_commit = "${{ github.sha }}"
-            base_commit = "${{ github.sha }}"
-            if ( "${{ github.event.before }}" != '0000000000000000000000000000000000000000') { 
-              base_commit = "${{ github.event.before }}"
-            }
-            if ( "${{ github.event_name }}" == 'pull_request') {
-              console.log("Using the base branch's commit for comparing.")
-              base_commit = "${{ github.event.pull_request.base.sha  }}"
-            }
-            console.log("base_commit " + base_commit);
-            console.log("head_commit " + head_commit); 
-            response = await github.rest.repos.compareCommits({
-                owner: "${{ github.repository_owner }}",
-                repo: "${{  github.repository }}".split('/')[1],
-                head: head_commit,
-                base: base_commit
-            });
-            var terraform_file = [] 
-            response.data.files.forEach(function(file_entry) {
-              if (file_entry.filename.endsWith(".tf") && file_entry.status != 'removed') {
-                console.log(file_entry.filename);
-                console.log(file_entry.status);
-                terraform_file.push(file_entry.filename)
-                console.log(terraform_file) ;
+            const exp = require('constants');
+            const fs = require('fs');
+            const yaml = require('js-yaml');
+            var nexusRepo;
+            var version;
+            var exporter;
+            
+            function checkVersion(nexusRepo, exporter, version){
+              console.log(nexusRepo);
+              console.log(exporter);
+              console.log(version);
+              execSync = require('child_process').execSync;
+              const output=execSync(`
+                  file="${exporter}-${version}"
+                  API_URL="$NEXUS_URL=${nexusRepo}&version=${version}"
+                  echo $API_URL
+                  echo $file
+                  response=$(curl -u "$NEXUS_USERNAME:$NEXUS_PASSWORD" -X GET "$API_URL")
+                  check="$(echo $response | grep $file)"
+                  if [ ! -z "$check" ]
+                      then
+                          echo "Fail"
+                          exit 
+                      fi
+                  
+                  while [ "$(echo $response | jq -r '.continuationToken')" != "null" ]; do
+                      continuationToken=$(echo $response | jq -r '.continuationToken')
+                      response=$(curl -u "$NEXUS_USERNAME:$NEXUS_PASSWORD" -X GET "$API_URL&continuationToken=$continuationToken")
+                      check="$(echo $response | grep $file)"
+                      if [ ! -z "$check" ]
+                      then
+                          echo "Fail"
+                          exit 
+                      fi
+                  done
+                  if [ -z "$check" ]
+                      then
+                          echo "Pass"
+                          exit 
+                      fi
+              `, { encoding: 'utf-8' }); 
+              console.log(output);
+              if(output.includes("Fail")){
+                throw new Error("Error: Update version, matching version file already present in Nexus")
               }
-            });
-            core.setOutput('terraform_file' , terraform_file.join(','));
-
-
-      - name: Check Version sequence of DB Scripts
-        id: check_db_version_seq
-        if: steps.check_db_migration.outputs.db_migration_dir
-        run:
-          python3 .github/scripts/check_db_migration_version_sequence.py "${{ steps.check_db_migration.outputs.db_migration_dir }}"      
-      
-
-      - name: check for terraform version
-        if: steps.terraform_check.outputs.terraform_file 
-        run:
-          terraform_version_check "${{ steps.terraform_check.outputs.terraform_file }}"
+              else
+                console.log("Passed: No matching version present in Nexus")
+            }
+            
+            try{
+              const content = fs.readFileSync('./convoy.yaml', 'utf8');
+              const data = yaml.load(content);
+              var language = data.language
+              version = data.version;
+              exporter = data.generates.artifacts[0].name
+              nexusRepo = '${{vars.NEXUS_PUSH_REPOS_M2}}'
+              if(version === undefined || exporter === undefined ){
+                console.log("Required parameters not present in convoy.yaml, skipping check nexus version")
+                process.exit(0);
+              }
+            } catch(error){
+              console.log("convoy.yaml not present in repository or missing key. skipping check nexus version.")
+              console.error('Error:', error.message)
+              process.exit(0);
+            }
+            try{
+              checkVersion(nexusRepo,exporter,version)
+            } catch (e) {
+              console.error(e);
+              process.exit(1);
+            }
       
       - name: check to verify same branch is exist
         if: ${{ startsWith(env.TARGET_BRANCH,'rel-') && !contains(env.SOURCE_BRANCH,'double_commit') }}
